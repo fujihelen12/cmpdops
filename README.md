@@ -12,15 +12,9 @@ This project was developed as part of a Human-Centered Design course and demonst
 
 Access the deployed application through Streamlit Cloud:
 
-**[Insert Streamlit URL Here]**
+https://cmpdops-ee5ezycqut9anewncgq9ox.streamlit.app/
 
-Example:
 
-```
-https://your-app-name.streamlit.app
-```
-
----
 
 # Problem Statement
 
