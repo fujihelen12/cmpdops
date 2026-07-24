@@ -244,7 +244,7 @@ This project demonstrated that:
 
 **Helen Martone**
 
-Senior Associate Scientist – Compound Management
+Scientist – Compound Management
 
 Human-Centered Design Course Project
 
