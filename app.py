@@ -19,6 +19,18 @@ st.set_page_config(
 
 st.title("CompoundOps Assistant")
 
+with st.sidebar:
+
+    st.header("Application Controls")
+
+    if st.button(
+        "🗑️ Clear Entire Session",
+        use_container_width=True
+    ):
+        for key in list(st.session_state.keys()):
+            del st.session_state[key]
+
+        st.rerun()
 st.write(
     "Inventory intelligence, assay design, solvent-normalized backfill planning, "
     "intermediate dilution strategy, and dose-response plate mapping."
@@ -78,7 +90,6 @@ required_cols = [
     "location"
 ]
 
-for_col_fix = []
 for col in required_cols:
     if col not in inventory.columns:
         inventory[col] = ""
@@ -106,6 +117,18 @@ inventory["container_type"] = (
     .str.strip()
 )
 
+inventory["solvent"] = (
+    inventory["solvent"]
+    .astype(str)
+    .str.strip()
+)
+
+inventory["inventory_status"] = (
+    inventory["inventory_status"]
+    .astype(str)
+    .str.strip()
+)
+
 numeric_cols = [
     "mw",
     "stock_mM",
@@ -121,8 +144,6 @@ for col in numeric_cols:
         errors="coerce"
     )
 
-# Unique aliquot/container record ID.
-# This helps distinguish duplicate compounds across locations, containers, and rows.
 inventory = inventory.reset_index(drop=True)
 
 inventory["Aliquot ID"] = (
@@ -139,6 +160,22 @@ inventory["Aliquot ID"] = (
 # ==================================================
 # GENERAL HELPERS
 # ==================================================
+
+def clean_unique_values(series):
+    values = (
+        series
+        .dropna()
+        .astype(str)
+        .str.strip()
+    )
+
+    values = [
+        v for v in values.unique().tolist()
+        if v and v.lower() != "nan"
+    ]
+
+    return sorted(values)
+
 
 def parse_compound_ids(text):
     if not text:
@@ -312,7 +349,7 @@ def calculate_solvent_backfill(
 
 
 # ==================================================
-# INVENTORY SEARCH FUNCTIONS
+# INVENTORY FUNCTIONS
 # ==================================================
 
 def inventory_health(row):
@@ -429,6 +466,57 @@ def solvent_guidance(solvent):
 """
 
 
+def run_inventory_global_search(
+    inventory_df,
+    search_term,
+    solvent_filter,
+    container_filter,
+    status_filter,
+    location_filter
+):
+    filtered = inventory_df.copy()
+
+    search_term = str(search_term).strip()
+
+    if search_term:
+        mask = (
+            filtered
+            .astype(str)
+            .apply(
+                lambda col: col.str.contains(
+                    search_term,
+                    case=False,
+                    na=False
+                )
+            )
+            .any(axis=1)
+        )
+
+        filtered = filtered[mask].copy()
+
+    if solvent_filter:
+        filtered = filtered[
+            filtered["solvent"].isin(solvent_filter)
+        ].copy()
+
+    if container_filter:
+        filtered = filtered[
+            filtered["container_type"].isin(container_filter)
+        ].copy()
+
+    if status_filter:
+        filtered = filtered[
+            filtered["inventory_status"].isin(status_filter)
+        ].copy()
+
+    if location_filter:
+        filtered = filtered[
+            filtered["location"].isin(location_filter)
+        ].copy()
+
+    return filtered
+
+
 # ==================================================
 # ASSAY DESIGN FUNCTIONS
 # ==================================================
@@ -485,8 +573,6 @@ def build_direct_stock_assay_design(
             compound["expiry"],
             errors="coerce"
         )
-
-        record_id = aliquot_id
 
         for idx, target_mM in enumerate(
             concentrations_mM,
@@ -578,7 +664,6 @@ def build_direct_stock_assay_design(
                 {
                     "Compound ID": compound_id,
                     "Aliquot ID": aliquot_id,
-                    "Inventory Record": record_id,
                     "Dose Point": idx,
                     "Target Conc (mM)": target_mM,
                     "Target Conc": format_concentration(target_mM),
@@ -821,8 +906,6 @@ def build_intermediate_strategy(
         location = compound["location"]
         aliquot_id = compound.get("Aliquot ID", f"{compound_id} | {location}")
 
-        record_id = aliquot_id
-
         direct_flags = []
         direct_transfer_list = []
 
@@ -927,7 +1010,6 @@ def build_intermediate_strategy(
         ):
 
             zero_idx = idx - 1
-
             direct_transfer_nL = direct_transfer_list[zero_idx]
 
             source_type = "Review"
@@ -1020,7 +1102,6 @@ def build_intermediate_strategy(
                 {
                     "Compound ID": compound_id,
                     "Aliquot ID": aliquot_id,
-                    "Inventory Record": record_id,
                     "Dose Point": idx,
                     "Target Conc (mM)": target_mM,
                     "Target Conc": format_concentration(target_mM),
@@ -1060,7 +1141,7 @@ def build_intermediate_strategy(
 
 
 # ==================================================
-# DOSE RESPONSE PLATE MAP FUNCTIONS
+# PLATE MAP FUNCTIONS
 # ==================================================
 
 def get_plate_dimensions(plate_format):
@@ -1086,7 +1167,10 @@ def get_plate_dimensions(plate_format):
 def normalize_well(well):
     well = str(well).strip().upper()
 
-    match = re.match(r"^([A-Z]+)(\d+)$", well)
+    match = re.match(
+        r"^([A-Z]+)(\d+)$",
+        well
+    )
 
     if not match:
         return well
@@ -1533,7 +1617,7 @@ tab_inventory, tab_assay, tab_intermediate, tab_plate = st.tabs(
 
 
 # ==================================================
-# TAB 1: INVENTORY SEARCH WITH ALIQUOT MULTI-SELECT
+# TAB 1: INVENTORY SEARCH WITH GLOBAL SEARCH + FILTERS
 # ==================================================
 
 with tab_inventory:
@@ -1542,18 +1626,49 @@ with tab_inventory:
 
     st.write(
         """
-        Search local inventory, review all matching aliquots or containers,
-        select the exact records to use, and send only those selected aliquots
-        forward into assay design.
+        Search inventory by compound ID, solvent, container type, status,
+        location, or any other visible inventory field. Then select the exact
+        aliquot/container record to send into assay design.
         """
     )
 
-    compound_text = st.text_area(
-        "Enter Compound IDs",
-        height=150,
-        placeholder="CMPD-2001\nCMPD-2002\nCMPD-2003",
-        key="inventory_compound_text"
+    search_term = st.text_input(
+        "Global Search",
+        placeholder="Examples: CMPD-1001, DMSO, Tube, Available, Freezer A, 10",
+        key="global_inventory_search"
     )
+
+    with st.expander("Optional Filters", expanded=True):
+
+        f1, f2, f3, f4 = st.columns(4)
+
+        with f1:
+            solvent_filter = st.multiselect(
+                "Solvent",
+                clean_unique_values(inventory["solvent"]),
+                key="solvent_filter"
+            )
+
+        with f2:
+            container_filter = st.multiselect(
+                "Container Type",
+                clean_unique_values(inventory["container_type"]),
+                key="container_filter"
+            )
+
+        with f3:
+            status_filter = st.multiselect(
+                "Status",
+                clean_unique_values(inventory["inventory_status"]),
+                key="status_filter"
+            )
+
+        with f4:
+            location_filter = st.multiselect(
+                "Location",
+                clean_unique_values(inventory["location"]),
+                key="location_filter"
+            )
 
     run_search = st.button(
         "Search Inventory",
@@ -1562,69 +1677,50 @@ with tab_inventory:
 
     if run_search:
 
-        compound_ids = parse_compound_ids(
-            compound_text
+        search_results = run_inventory_global_search(
+            inventory_df=inventory,
+            search_term=search_term,
+            solvent_filter=solvent_filter,
+            container_filter=container_filter,
+            status_filter=status_filter,
+            location_filter=location_filter
         )
 
-        if not compound_ids:
+        if len(search_results) == 0:
 
             st.warning(
-                "Enter at least one compound ID."
+                "No matching inventory records found."
             )
 
         else:
 
-            search_results = inventory[
-                inventory["compound_id"]
-                .isin(compound_ids)
-            ].copy()
+            search_results["usable_uL"] = (
+                search_results["available_uL"] - 10
+            )
 
-            missing = [
-                cid for cid in compound_ids
-                if cid not in search_results["compound_id"].tolist()
-            ]
-
-            if missing:
-                st.warning(
-                    "These compounds were not found: "
-                    + ", ".join(missing)
+            search_results["Inventory_Health"] = (
+                search_results.apply(
+                    inventory_health,
+                    axis=1
                 )
+            )
 
-            if len(search_results) == 0:
-
-                st.error(
-                    "No matching compounds found."
+            search_results["SOP_Guidance"] = (
+                search_results["solvent"]
+                .apply(
+                    solvent_guidance
                 )
+            )
 
-            else:
+            search_results["Use"] = False
 
-                search_results["usable_uL"] = (
-                    search_results["available_uL"] - 10
-                )
+            st.session_state[
+                "last_inventory_search_results"
+            ] = search_results
 
-                search_results["Inventory_Health"] = (
-                    search_results.apply(
-                        inventory_health,
-                        axis=1
-                    )
-                )
-
-                search_results["SOP_Guidance"] = (
-                    search_results["solvent"]
-                    .apply(
-                        solvent_guidance
-                    )
-                )
-
-                search_results["Use"] = False
-
-                st.session_state[
-                    "last_inventory_search_results"
-                ] = search_results
-
-                st.success(
-                    f"{len(search_results)} matching inventory record(s) found."
-                )
+            st.success(
+                f"{len(search_results)} matching inventory record(s) found."
+            )
 
     if "last_inventory_search_results" in st.session_state:
 
@@ -2147,11 +2243,6 @@ with tab_assay:
                 use_container_width=True
             )
 
-            st.info(
-                "Assay Designer calculates direct-from-stock transfer and solvent-normalized backfill. "
-                "Intermediate Strategy lets you decide how many limited intermediates to create."
-            )
-
 
 # ==================================================
 # TAB 3: INTERMEDIATE STRATEGY
@@ -2240,11 +2331,21 @@ with tab_intermediate:
                 key="intermediate_start_mode"
             )
 
+            max_dose_point = max(
+                1,
+                len(concentrations_mM)
+            )
+
+            default_start_dose = min(
+                4,
+                max_dose_point
+            )
+
             manual_start_dose = st.number_input(
                 "Manual Start Dose Point",
-                value=4,
+                value=default_start_dose,
                 min_value=1,
-                max_value=len(concentrations_mM),
+                max_value=max_dose_point,
                 step=1,
                 key="manual_start_dose"
             )
